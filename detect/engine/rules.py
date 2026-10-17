@@ -38,8 +38,8 @@ def load_rules(path: str | Path | None = None) -> Rules:
     path = Path(path) if path else DEFAULT_RULES_PATH
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
-        raise RulesError([f"{path}: {exc}"]) from exc
+    except (OSError, UnicodeDecodeError, yaml.YAMLError, RecursionError) as exc:
+        raise RulesError([f"{path}: {exc or 'nested too deeply'}"]) from exc
     errors = validate(data)
     if errors:
         raise RulesError(errors)

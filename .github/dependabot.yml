@@ -1,0 +1,17 @@
+version: 2
+updates:
+  # SHA-pinned actions in .github/workflows (the version comment is updated too).
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+
+  # Hash-pinned CI requirements (.github/requirements-*.txt).
+  - package-ecosystem: pip
+    directory: "/.github"
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7

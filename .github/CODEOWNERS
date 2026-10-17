@@ -1,0 +1,9 @@
+# Changes to CI, dependency pins and the code that generates workflows need the owner's review.
+# Enable "Require review from Code Owners" in branch protection for this to be enforced.
+*                    @tejgokani
+/.github/            @tejgokani
+/render/             @tejgokani
+/detect/rules.yml    @tejgokani
+/pyproject.toml      @tejgokani
+/SECURITY.md         @tejgokani
+/LICENSE             @tejgokani

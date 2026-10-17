@@ -53,8 +53,8 @@ def load_existing(root: Path) -> dict:
         return {}
     try:
         data = yaml.safe_load(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
-        raise PlanFileError([f"{PLAN_FILE}: {exc}"]) from exc
+    except (OSError, UnicodeDecodeError, yaml.YAMLError, RecursionError) as exc:
+        raise PlanFileError([f"{PLAN_FILE}: {exc or 'nested too deeply'}"]) from exc
     errors = validate(data)
     if errors:
         raise PlanFileError([f"{PLAN_FILE}: {e}" for e in errors])

@@ -1,21 +1,54 @@
 #!/usr/bin/env python3
 """ap: anything-pipeline command line.
 
-Exit codes: 0 ok, 1 error, 2 plan is ambiguous (only with --strict).
+Exit codes: 0 ok, 1 error, 2 plan is ambiguous (`detect --strict`) or `init` needs a decision.
 """
 from __future__ import annotations
 
-import argparse
-import json
 import sys
-from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT))
+MIN_PYTHON = (3, 11)
+
+
+def check_runtime(version_info=None) -> str | None:
+    """Explain why this interpreter cannot run ap, or return None. Runs before any other import."""
+    version_info = version_info or sys.version_info
+    if tuple(version_info[:2]) < MIN_PYTHON:
+        found = ".".join(str(part) for part in version_info[:3])
+        return (
+            f"Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]} or newer is required, but this is Python {found}. "
+            "Run it with a newer interpreter, for example: "
+            "uv run --python 3.11 --with 'PyYAML>=6' python cli/ap.py ..."
+        )
+    try:
+        import yaml  # noqa: F401
+    except ImportError:
+        return "PyYAML is required. Install it with: python -m pip install 'PyYAML>=6'"
+    return None
+
+
+_problem = check_runtime()
+if _problem:
+    sys.stderr.write(f"ap: {_problem}\n")
+    raise SystemExit(1)
+
+import argparse  # noqa: E402
+import json  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+if __package__ in (None, ""):  # run as a script: python cli/ap.py
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from detect.engine import RulesError, detect, load_rules, render_text  # noqa: E402
+from detect.engine.text import escape_controls  # noqa: E402
 from render import InitError, run_init  # noqa: E402
 from render.init import DEFAULT_KIT_REPO  # noqa: E402
+
+
+def emit(text: str = "", *, err: bool = False, end: str = "\n") -> None:
+    """Print, neutralising terminal escapes and other control characters from untrusted repos."""
+    stream = sys.stderr if err else sys.stdout
+    stream.write(escape_controls(text, keep_newlines=True) + end)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -57,47 +90,54 @@ def run_init_command(args) -> int:
             rules=rules,
         )
     except (RulesError, InitError, OSError) as exc:
-        print(f"ap: {exc}", file=sys.stderr)
+        emit(f"ap: {exc}", err=True)
         return 1
 
     if result.blocked:
-        print("ap init: nothing written; a decision is needed:", file=sys.stderr)
+        emit("ap init: nothing written; a decision is needed:", err=True)
         for item in result.blocked:
-            print(f"  - {item}", file=sys.stderr)
+            emit(f"  - {item}", err=True)
         return 2
     for note in result.notes:
-        print(f"note: {note}", file=sys.stderr)
+        emit(f"note: {note}", err=True)
     if result.dry_run:
         for rel, text in result.files.items():
-            print(f"==> {rel} <==")
-            print(text, end="" if text.endswith("\n") else "\n")
-        print("(dry run: nothing written)", file=sys.stderr)
+            emit(f"==> {rel} <==")
+            emit(text, end="" if text.endswith("\n") else "\n")
+        emit("(dry run: nothing written)", err=True)
     else:
         for rel in result.written:
-            print(f"wrote {rel}")
-        print("Next: commit these files, then require the `gate` check in branch protection.")
+            emit(f"wrote {rel}")
+        emit("Next: commit these files, then require the `gate` check in branch protection.")
     return 0
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
-    if args.command == "init":
-        return run_init_command(args)
+def run_detect_command(args) -> int:
     try:
         rules = load_rules(args.rules)
         plan = detect(args.path, rules=rules, explain=args.explain)
-    except RulesError as exc:
-        print(f"ap: {exc}", file=sys.stderr)
-        return 1
-    except (OSError, NotADirectoryError) as exc:
-        print(f"ap: {exc}", file=sys.stderr)
+    except (RulesError, OSError) as exc:
+        emit(f"ap: {exc}", err=True)
         return 1
 
     if args.json:
-        print(json.dumps(plan, indent=2, sort_keys=True))
+        # json.dumps escapes every non-ASCII and control character, so this is terminal-safe as is.
+        emit(json.dumps(plan, indent=2, sort_keys=True))
     else:
-        print(render_text(plan, args.path))
+        emit(render_text(plan, args.path))
     return 2 if args.strict and plan["ambiguous"] else 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="backslashreplace")
+    args = build_parser().parse_args(argv)
+    try:
+        return run_init_command(args) if args.command == "init" else run_detect_command(args)
+    except RecursionError:
+        emit("ap: an input file is nested too deeply to process", err=True)
+        return 1
 
 
 if __name__ == "__main__":

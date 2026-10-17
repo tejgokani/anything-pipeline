@@ -105,7 +105,7 @@ class RepoFS:
             text = self.read_text(rel)
             try:
                 self._json[rel] = None if text is None else json.loads(text)
-            except ValueError:
+            except (ValueError, RecursionError):  # RecursionError: absurdly nested input
                 self._json[rel] = None
         return self._json[rel]
 
@@ -114,7 +114,7 @@ class RepoFS:
             text = self.read_text(rel)
             try:
                 self._toml[rel] = None if text is None else tomllib.loads(text)
-            except tomllib.TOMLDecodeError:
+            except (tomllib.TOMLDecodeError, RecursionError):
                 self._toml[rel] = None
         return self._toml[rel]
 

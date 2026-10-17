@@ -1,6 +1,6 @@
 # anything-pipeline: repo layout and detection manifest (draft v0)
 
-Status: Phases 0 and 1 are implemented: detection (`ap detect`), the `verify` reusable workflow (node, python, go, generic flavors), the `gate` job, and `ap init` (renders the caller workflow and `.anything-pipeline.yml`), with 120 tests. Not yet validated by a real GitHub Actions run. Everything else is still design. Names are placeholders.
+Status: Phases 0 and 1 are implemented: detection (`ap detect`), the `verify` reusable workflow (node, python, go, generic flavors), the `gate` job, and `ap init` (renders the caller workflow and `.anything-pipeline.yml`), with 161 tests, plus pre-publication hardening (section 4b). Not yet validated by a real GitHub Actions run. Everything else is still design. Names are placeholders.
 
 ## 1. Principles
 
@@ -201,6 +201,16 @@ disabled: []                    # e.g. [verify]
 Known gaps: not run on GitHub (only static checks, scripts under stub tools, and the Go script with the real toolchain); `pnpm/action-setup` with an empty `version` input relies on `packageManager` in package.json (`init` prints a note when it is missing); npm workspaces installs should use `working-directory: "."`.
 
 Lint status (2026-10-17): zizmor 1.31.1 (default, auditor and pedantic personas, **offline**) and actionlint 1.7.12 are clean on `verify.yml` and rendered callers for the monorepo, Go and Python fixtures. zizmor's one low finding (an unlocked `npm install`) was fixed by making it an explicit opt-in, and that single line carries an inline `zizmor: ignore`. Not covered: zizmor's online audits (impostor commits, known-vulnerable actions, stale version comments; need a GitHub token), and actionlint's shellcheck and pyflakes integrations (neither tool is installed; `tests/test_workflow_invariants.py` runs `bash -n` and a strict-mode check on every run block instead).
+
+### 4b. Pre-publication hardening (as built)
+
+Found by probing the CLI with hostile inputs, then fixed with tests:
+- **Terminal safety.** `detect/engine/text.py: escape_controls` turns control, format (including bidi overrides), surrogate and line-separator characters into visible escapes. Applied to every repo-derived value in `render_text` and, as a second layer, to all CLI output (`emit`). Before: an ANSI escape plus a newline in a directory name could clear the screen and forge a `result: clear` line. Non-UTF-8 file names no longer crash printing.
+- **Pathological nesting.** Deeply nested JSON, TOML or YAML (a 400 KB `package.json` crashed the CLI with `RecursionError`) is now treated as unreadable; the CLI also has a last-resort handler.
+- **Runtime guard.** `cli/ap.py` checks for Python 3.11+ and PyYAML before any other import and prints how to proceed (macOS system Python 3.9 used to crash on `tomllib`). The file stays parseable by Python 3.9 so the message can be shown.
+- **Packaging and repo hygiene.** `pyproject.toml` (Python 3.11+, PyYAML, `ap` entry point; the wheel was built and its installed `ap` run from outside the repo), Apache-2.0 `LICENSE`, `README.md` with an explicit pre-alpha status and threat model, `SECURITY.md`, `.github/CODEOWNERS`, `.github/dependabot.yml` with a 7-day cooldown, and `self-ci.yml` (tests on Python 3.11 and 3.14 on Linux and macOS, plus zizmor and actionlint). CI Python dependencies are installed with `--require-hashes` from files that carry every release hash; `tests/test_repo_hygiene.py` guards all of this, including that the README never overclaims.
+
+Still open: top-level package names `cli`, `detect`, `render` are generic (fine for uvx/pipx, rename before PyPI); Dependabot's handling of `--hash` requirement files is unverified; the self-CI has not run on GitHub; the non-UTF-8 file-name test only runs on filesystems that allow such names (skipped on macOS).
 
 ## 5. What lands in the user's repo
 

@@ -6,6 +6,7 @@ from pathlib import Path
 from .evaluate import Evaluator, describe
 from .matchers import RepoFS
 from .rules import Rules, load_rules
+from .text import escape_controls as esc
 from .workspaces import discover
 
 PLAN_VERSION = 1
@@ -137,25 +138,25 @@ def _pick_ship(rules: Rules, kinds: list):
 
 def render_text(plan: dict, root: str = ".") -> str:
     """Human-readable plan. Evidence is shown when the plan was built with explain=True."""
-    lines = [f"anything-pipeline detect: {root}"]
+    lines = [f"anything-pipeline detect: {esc(str(root))}"]
     ws = plan["workspace"]
     if ws:
         lines.append(f"workspace: {' + '.join(ws['tools'])}" + (f" (units from {ws['unit_source']})" if ws["unit_source"] else ""))
         if ws["affected"]:
             lines.append(f"  affected: {ws['affected']}")
         for item in ws.get("explain", []):
-            lines.append(f"  {item['tool']}: {item['when']}  <- {', '.join(item['evidence'])}")
+            lines.append(f"  {item['tool']}: {item['when']}  <- {', '.join(esc(e) for e in item['evidence'])}")
     for problem in plan["problems"]:
-        lines.append(f"PROBLEM: {problem}")
+        lines.append(f"PROBLEM: {esc(problem)}")
 
     for unit in plan["units"]:
         lines.append("")
-        lines.append(f"unit {unit['path']}")
+        lines.append(f"unit {esc(unit['path'])}")
         why = unit.get("explain")
         if why:
             lines.append("  signals:")
             for name, evidence in why["signals"].items():
-                lines.append(f"    {name:<16} {', '.join(evidence)}")
+                lines.append(f"    {name:<16} {', '.join(esc(e) for e in evidence)}")
         lines.append("  kinds: " + (", ".join(unit["kinds"]) or "(none)"))
         if why:
             for name, info in why["kinds"].items():
@@ -177,7 +178,7 @@ def render_text(plan: dict, root: str = ".") -> str:
             lines.append("  ship: (none)")
         if unit["ambiguous"]:
             lines.append("  AMBIGUOUS:")
-            lines.extend(f"    - {reason}" for reason in unit["reasons"])
+            lines.extend(f"    - {esc(reason)}" for reason in unit["reasons"])
 
     lines.append("")
     lines.append("always: " + ", ".join(plan["always"]))

@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "anything-pipeline"
+version = "0.0.1"
+description = "Detect a repository's project type and install hardened, SHA-pinned GitHub Actions pipelines (pre-alpha)."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "tejgokani" }]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Build Tools",
+]
+dependencies = ["PyYAML>=6.0.2"]
+
+[project.urls]
+Homepage = "https://github.com/tejgokani/anything-pipeline"
+Security = "https://github.com/tejgokani/anything-pipeline/security/policy"
+
+[project.scripts]
+ap = "cli.ap:main"
+
+# The top-level package names (cli, detect, render) are generic. That is fine for isolated
+# installs (uvx, pipx) but must be namespaced before publishing to PyPI or installing into a
+# shared environment.
+[tool.setuptools.packages.find]
+include = ["cli*", "detect*", "render*"]
+
+[tool.setuptools.package-data]
+detect = ["rules.yml"]

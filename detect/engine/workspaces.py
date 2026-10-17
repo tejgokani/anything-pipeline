@@ -65,7 +65,7 @@ def _members(fs: RepoFS, source: str) -> list:
 def parse_pnpm_workspace(text: str) -> list:
     try:
         data = yaml.safe_load(text)
-    except yaml.YAMLError:
+    except (yaml.YAMLError, RecursionError):
         return []
     packages = data.get("packages") if isinstance(data, dict) else None
     return [p for p in packages if isinstance(p, str)] if isinstance(packages, list) else []
@@ -76,7 +76,7 @@ def parse_package_workspaces(text: str) -> list:
 
     try:
         data = json.loads(text)
-    except ValueError:
+    except (ValueError, RecursionError):
         return []
     workspaces = data.get("workspaces") if isinstance(data, dict) else None
     if isinstance(workspaces, dict):

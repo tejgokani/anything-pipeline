@@ -1,0 +1,108 @@
+# self-ci: this repository's own checks. Same rules as the pipelines it ships:
+# empty top-level permissions, read-only jobs, SHA-pinned actions, hash-pinned Python
+# dependencies, no secrets, no privileged pull-request triggers.
+name: self-ci
+
+on:
+  pull_request:
+  push:
+    branches: ["main"]
+
+concurrency:
+  group: self-ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions: {}
+
+jobs:
+  tests:
+    name: tests (py${{ matrix.python }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-latest, python: "3.11" }
+          - { os: ubuntu-latest, python: "3.14" }
+          - { os: macos-latest, python: "3.14" }
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install test dependencies (hash-pinned)
+        run: python -m pip install --require-hashes --no-deps -r .github/requirements-test.txt
+
+      - name: Run tests
+        run: python -m unittest discover -s tests -t . -v
+
+  workflow-lint:
+    name: workflow lint (zizmor, actionlint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+
+      - name: Install zizmor (hash-pinned)
+        run: python -m pip install --require-hashes --no-deps -r .github/requirements-lint.txt
+
+      - name: Run zizmor
+        env:
+          # Read-only token, used only so zizmor can run its online audits (impostor commits,
+          # known-vulnerable actions, stale version comments).
+          GH_TOKEN: ${{ github.token }}
+        run: zizmor --persona pedantic --format plain .github/workflows
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26"
+          cache: false
+
+      - name: Install actionlint
+        run: go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+
+      - name: Run actionlint
+        run: |
+          "$(go env GOPATH)/bin/actionlint"
+
+  # The only check branch protection needs to require.
+  gate:
+    name: gate
+    if: ${{ always() }}
+    needs: [tests, workflow-lint]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require every job to pass
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          echo "$NEEDS" | jq -r 'to_entries[] | "\(.key): \(.value.result)"'
+          if echo "$NEEDS" | jq -e 'all(.[]; .result == "success" or .result == "skipped")' >/dev/null; then
+            echo "All jobs passed."
+          else
+            echo "::error::At least one job failed or was cancelled."
+            exit 1
+          fi
