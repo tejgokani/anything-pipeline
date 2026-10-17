@@ -330,19 +330,31 @@ jobs:
           BUILD_COMMAND: ${{ inputs.build-command }}
         run: |
           set -euo pipefail
+          default_check() {
+            local unformatted
+            unformatted=$(gofmt -l .)
+            if [ -n "$unformatted" ]; then
+              echo "::error::gofmt needed for:"
+              echo "$unformatted"
+              exit 1
+            fi
+            go vet ./...
+          }
+          default_test() { go test ./...; }
+          default_build() { go build ./...; }
           run_task() {
             local name="$1" override="$2" default="$3"
             echo "::group::$name"
             if [ -n "$override" ]; then
               bash -euo pipefail -c "$override"
             else
-              eval "$default"
+              "$default"
             fi
             echo "::endgroup::"
           }
-          run_task check "$CHECK_COMMAND" 'unformatted=$(gofmt -l .); if [ -n "$unformatted" ]; then echo "::error::gofmt needed for:"; echo "$unformatted"; exit 1; fi; go vet ./...'
-          run_task test "$TEST_COMMAND" 'go test ./...'
-          run_task build "$BUILD_COMMAND" 'go build ./...'
+          run_task check "$CHECK_COMMAND" default_check
+          run_task test "$TEST_COMMAND" default_test
+          run_task build "$BUILD_COMMAND" default_build
 
   generic:
     name: Generic (mise)
