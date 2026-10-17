@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "ambiguous": true,
+  "problems": [],
+  "always": ["verify", "agent-gate", "harden"],
+  "workspace": null,
+  "units": [
+    {
+      "path": ".",
+      "kinds": ["npm-library", "python-library"],
+      "verify": null,
+      "ship": null,
+      "ambiguous": true,
+      "reasons": [
+        "multiple languages matched: node, python",
+        "conflicting ship pipelines: ship-package/npm, ship-package/pypi"
+      ]
+    }
+  ]
+}

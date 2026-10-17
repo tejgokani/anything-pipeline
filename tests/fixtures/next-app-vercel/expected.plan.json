@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "ambiguous": false,
+  "problems": [],
+  "always": ["verify", "agent-gate", "harden"],
+  "workspace": null,
+  "units": [
+    {
+      "path": ".",
+      "kinds": ["web-app"],
+      "verify": { "flavor": "node", "vars": { "pm": "pnpm" } },
+      "ship": { "pipeline": "ship-app", "flavor": "platform" },
+      "ambiguous": false,
+      "reasons": []
+    }
+  ]
+}

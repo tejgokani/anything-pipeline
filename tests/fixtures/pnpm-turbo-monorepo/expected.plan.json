@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "ambiguous": false,
+  "problems": [],
+  "always": ["verify", "agent-gate", "harden"],
+  "workspace": {
+    "tools": ["turbo", "pnpm"],
+    "unit_source": "pnpm-workspace.yaml",
+    "affected": "turbo run {task} --filter=...[origin/main]"
+  },
+  "units": [
+    {
+      "path": "apps/web",
+      "kinds": ["web-app"],
+      "verify": { "flavor": "node", "vars": { "pm": "pnpm" } },
+      "ship": { "pipeline": "ship-app", "flavor": "platform" },
+      "ambiguous": false,
+      "reasons": []
+    },
+    {
+      "path": "packages/ui",
+      "kinds": ["npm-library"],
+      "verify": { "flavor": "node", "vars": { "pm": "pnpm" } },
+      "ship": { "pipeline": "ship-package", "flavor": "npm" },
+      "ambiguous": false,
+      "reasons": []
+    }
+  ]
+}

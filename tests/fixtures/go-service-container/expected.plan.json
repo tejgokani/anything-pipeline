@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "ambiguous": false,
+  "problems": [],
+  "always": ["verify", "agent-gate", "harden"],
+  "workspace": null,
+  "units": [
+    {
+      "path": ".",
+      "kinds": ["go-service"],
+      "verify": { "flavor": "go", "vars": {} },
+      "ship": { "pipeline": "ship-app", "flavor": "container" },
+      "ambiguous": false,
+      "reasons": []
+    }
+  ]
+}

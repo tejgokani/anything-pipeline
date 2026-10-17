@@ -1,0 +1,118 @@
+version: 1
+
+# Directories never walked and never searched by `glob` signals.
+ignore_dirs:
+  - .git
+  - node_modules
+  - vendor
+  - .venv
+  - venv
+  - __pycache__
+  - .next
+  - .turbo
+  - .tox
+  - .mypy_cache
+  - .pytest_cache
+
+# 1) Signals: named boolean facts derived from files. No interpretation yet.
+#    A mapping holds ONE leaf (file, file_any, glob, json, toml) or any of the
+#    combinators all/any/none (AND-ed together). `search_up: true` on a leaf also
+#    looks in parent directories up to the repo root (used for lockfiles that live
+#    at a workspace root).
+signals:
+  node:             { file: package.json }
+  python:           { file_any: [pyproject.toml, setup.py, setup.cfg, requirements.txt] }
+  go:               { file: go.mod }
+
+  # mise.toml is the universal task contract: if it defines check/test/build, it wins.
+  mise_file:        { file: mise.toml, search_up: true }
+  mise_tasks:
+    any:
+      - { toml: { file: mise.toml, path: tasks.check }, search_up: true }
+      - { toml: { file: mise.toml, path: tasks.test },  search_up: true }
+      - { toml: { file: mise.toml, path: tasks.build }, search_up: true }
+
+  # package-manager facts (lockfiles live at the workspace root for member units)
+  pm_pnpm:          { file: pnpm-lock.yaml, search_up: true }
+  pm_yarn:          { file: yarn.lock, search_up: true }
+  pm_bun:           { file_any: [bun.lock, bun.lockb], search_up: true }
+  py_uv:            { file: uv.lock, search_up: true }
+  py_poetry:        { file: poetry.lock, search_up: true }
+
+  # packaging and deploy facts
+  npm_publishable:
+    all:
+      - { json: { file: package.json, path: name } }
+      - none:
+          - { json: { file: package.json, path: private, equals: true } }
+  py_publishable:   { toml: { file: pyproject.toml, path: project.name } }
+  dockerfile:
+    any:
+      - { glob: "**/Dockerfile" }
+      - { glob: "**/Dockerfile.*" }
+  next_app:
+    any:
+      - { json: { file: package.json, path: dependencies.next } }
+      - { json: { file: package.json, path: devDependencies.next } }
+  electron_app:
+    any:
+      - { json: { file: package.json, path: dependencies.electron } }
+      - { json: { file: package.json, path: devDependencies.electron } }
+  vercel_cfg:       { file_any: [vercel.json, .vercel/project.json] }
+  wrangler_cfg:     { file_any: [wrangler.toml, wrangler.json, wrangler.jsonc] }
+  has_bin:          { json: { file: package.json, path: bin } }
+
+  # workspace facts (evaluated at the repo root)
+  ws_pnpm:          { file: pnpm-workspace.yaml }
+  ws_npm:           { json: { file: package.json, path: workspaces } }
+  ws_turbo:         { file: turbo.json }
+  ws_nx:            { file: nx.json }
+  ws_go:            { file: go.work }
+
+# 2) Kinds: project types built from signals. A unit can match more than one kind.
+#    Frameworks other than Next.js (Vite, Astro, Nuxt, ...) are not classified yet,
+#    so such apps are reported as ambiguous rather than guessed.
+kinds:
+  npm-library:      { all: [node, npm_publishable], none: [next_app, electron_app, dockerfile, has_bin, wrangler_cfg] }
+  npm-cli:          { all: [node, npm_publishable, has_bin], none: [electron_app, dockerfile] }
+  web-app:          { all: [node], any: [next_app, vercel_cfg], none: [npm_publishable] }
+  worker-app:       { all: [node, wrangler_cfg] }
+  python-library:   { all: [python, py_publishable], none: [dockerfile] }
+  container-app:    { all: [dockerfile], none: [go] }
+  go-service:       { all: [go, dockerfile] }
+  go-module:        { all: [go], none: [dockerfile] }
+
+# 3) Selection: which pipelines apply.
+pipelines:
+  always: [verify, agent-gate, harden]
+  ship:
+    - when: { kind_any: [npm-library, npm-cli, python-library, go-module] }
+      add: ship-package
+      flavor_by_kind: { npm-library: npm, npm-cli: npm, python-library: pypi, go-module: go-module }
+    - when: { kind_any: [web-app, worker-app, container-app, go-service] }
+      add: ship-app
+      flavor_by_kind: { web-app: platform, worker-app: worker, container-app: container, go-service: container }
+
+# Flavor choice for `verify`. First match per language wins. Two different languages
+# matching one unit is ambiguous. `exclusive: true` stops evaluation at that rule
+# (list exclusive rules first).
+flavors:
+  verify:
+    - { when: mise_tasks, use: generic, exclusive: true }
+    - { when: { all: [node, pm_pnpm] },     use: node,   vars: { pm: pnpm } }
+    - { when: { all: [node, pm_yarn] },     use: node,   vars: { pm: yarn } }
+    - { when: { all: [node, pm_bun] },      use: node,   vars: { pm: bun } }
+    - { when: node,                         use: node,   vars: { pm: npm } }
+    - { when: { all: [python, py_uv] },     use: python, vars: { pm: uv } }
+    - { when: { all: [python, py_poetry] }, use: python, vars: { pm: poetry } }
+    - { when: python,                       use: python, vars: { pm: pip } }
+    - { when: go,                           use: go }
+
+# Workspaces: how to split a monorepo into units. Evaluated at the repo root.
+# `units_from` names a parser; `affected` is a command template for changed-only runs.
+workspaces:
+  - { when: ws_turbo, tool: turbo, affected: "turbo run {task} --filter=...[origin/main]" }
+  - { when: ws_nx,    tool: nx,    affected: "nx affected -t {task}" }
+  - { when: ws_pnpm,  tool: pnpm,  units_from: pnpm-workspace.yaml }
+  - { when: ws_npm,   tool: node-workspaces, units_from: package.json }
+  - { when: ws_go,    tool: go,    units_from: go.work }

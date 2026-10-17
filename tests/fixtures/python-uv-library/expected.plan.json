@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "ambiguous": false,
+  "problems": [],
+  "always": ["verify", "agent-gate", "harden"],
+  "workspace": null,
+  "units": [
+    {
+      "path": ".",
+      "kinds": ["python-library"],
+      "verify": { "flavor": "python", "vars": { "pm": "uv" } },
+      "ship": { "pipeline": "ship-package", "flavor": "pypi" },
+      "ambiguous": false,
+      "reasons": []
+    }
+  ]
+}

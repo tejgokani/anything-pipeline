@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "ambiguous": false,
+  "problems": [],
+  "always": ["verify", "agent-gate", "harden"],
+  "workspace": null,
+  "units": [
+    {
+      "path": ".",
+      "kinds": ["npm-library"],
+      "verify": { "flavor": "node", "vars": { "pm": "npm" } },
+      "ship": { "pipeline": "ship-package", "flavor": "npm" },
+      "ambiguous": false,
+      "reasons": []
+    }
+  ]
+}

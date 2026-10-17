@@ -1,0 +1,411 @@
+# verify: lint, test and build one unit of a repository (zone 1: unprivileged CI).
+#
+# Reusable workflow. It is called by thin caller workflows rendered by `ap init`;
+# do not trigger it directly. Design rules:
+#   - Top-level permissions are empty; each job asks only for contents: read.
+#   - No secrets are passed in and none are used.
+#   - Every third-party action is pinned to a full commit SHA (tag in the comment).
+#   - Untrusted or caller-supplied values reach shell only through `env:`, never
+#     interpolated into `run:` text.
+#   - No dependency caching in v1 (keeps zone 1 free of cache writes). Slower, safer.
+#   - Fails closed: an unknown flavor, or a run where no task executed, is a failure.
+name: verify
+
+on:
+  workflow_call:
+    inputs:
+      flavor:
+        description: "node | python | go | generic"
+        type: string
+        required: true
+      pm:
+        description: "Package manager: npm|pnpm|yarn|bun (node), uv|poetry|pip (python)"
+        type: string
+        default: ""
+      working-directory:
+        description: "Unit directory relative to the repository root"
+        type: string
+        default: "."
+      node-version:
+        type: string
+        default: "lts/*"
+      python-version:
+        type: string
+        default: "3.x"
+      pnpm-version:
+        description: "Only needed when package.json has no packageManager field"
+        type: string
+        default: ""
+      poetry-version:
+        type: string
+        default: "2.1.3"
+      ignore-scripts:
+        description: "Skip npm/pnpm/yarn/bun lifecycle scripts during install"
+        type: boolean
+        default: false
+      check-command:
+        description: "Replaces the default lint/typecheck step"
+        type: string
+        default: ""
+      test-command:
+        description: "Replaces the default test step"
+        type: string
+        default: ""
+      build-command:
+        description: "Replaces the default build step"
+        type: string
+        default: ""
+      allow-empty:
+        description: "Do not fail when no check, test or build task could be found"
+        type: boolean
+        default: false
+      allow-unlocked:
+        description: "npm only: allow `npm install` when the repository has no lockfile (not recommended)"
+        type: boolean
+        default: false
+
+permissions: {}
+
+jobs:
+  unsupported-flavor:
+    name: Reject unknown flavor
+    if: ${{ !contains(fromJSON('["node","python","go","generic"]'), inputs.flavor) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Fail closed on an unknown flavor
+        env:
+          FLAVOR: ${{ inputs.flavor }}
+        run: |
+          echo "::error::verify does not support flavor '$FLAVOR'"
+          exit 1
+
+  node:
+    name: Node
+    if: ${{ inputs.flavor == 'node' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up pnpm
+        if: ${{ inputs.pm == 'pnpm' }}
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          version: ${{ inputs.pnpm-version }}
+
+      - name: Set up Bun
+        if: ${{ inputs.pm == 'bun' }}
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          no-cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ inputs.node-version }}
+          package-manager-cache: false
+
+      - name: Install dependencies
+        env:
+          PM: ${{ inputs.pm }}
+          IGNORE_SCRIPTS: ${{ inputs.ignore-scripts }}
+          ALLOW_UNLOCKED: ${{ inputs.allow-unlocked }}
+        run: | # zizmor: ignore[adhoc-packages] -- the unlocked install below is an explicit opt-in (allow-unlocked)
+          set -euo pipefail
+          find_up() {
+            local dir="$PWD" root="${GITHUB_WORKSPACE:-/}"
+            while :; do
+              if [ -f "$dir/$1" ]; then return 0; fi
+              if [ "$dir" = "$root" ] || [ "$dir" = "/" ]; then return 1; fi
+              dir=$(dirname "$dir")
+            done
+          }
+          flags=""
+          if [ "$IGNORE_SCRIPTS" = "true" ]; then flags="--ignore-scripts"; fi
+          case "$PM" in
+            npm)
+              if find_up package-lock.json || find_up npm-shrinkwrap.json; then
+                npm ci $flags
+              elif [ "$ALLOW_UNLOCKED" = "true" ]; then
+                npm install --no-audit --no-fund $flags
+              else
+                echo "::error::no package-lock.json or npm-shrinkwrap.json found. Commit a lockfile (npm install --package-lock-only) or set allow-unlocked: true"
+                exit 1
+              fi ;;
+            pnpm)
+              pnpm install --frozen-lockfile $flags ;;
+            yarn)
+              if command -v corepack >/dev/null 2>&1; then corepack enable; fi
+              major=$(yarn --version | cut -d. -f1)
+              if [ "$major" -ge 2 ]; then
+                if [ -n "$flags" ]; then export YARN_ENABLE_SCRIPTS=false; fi
+                yarn install --immutable
+              else
+                yarn install --frozen-lockfile $flags
+              fi ;;
+            bun)
+              bun install --frozen-lockfile $flags ;;
+            *)
+              echo "::error::unsupported package manager '$PM' for the node flavor"
+              exit 1 ;;
+          esac
+
+      - name: Run check, test and build
+        env:
+          PM: ${{ inputs.pm }}
+          CHECK_COMMAND: ${{ inputs.check-command }}
+          TEST_COMMAND: ${{ inputs.test-command }}
+          BUILD_COMMAND: ${{ inputs.build-command }}
+          ALLOW_EMPTY: ${{ inputs.allow-empty }}
+        run: |
+          set -euo pipefail
+          ran=0
+          has_script() {
+            node -e 'const s=(require("./package.json").scripts)||{};const v=s[process.argv[1]];process.exit(v&&!/no test specified/.test(v)?0:1)' "$1"
+          }
+          run_task() {
+            local name="$1" override="$2" script found=0
+            shift 2
+            echo "::group::$name"
+            if [ -n "$override" ]; then
+              bash -euo pipefail -c "$override"
+              found=1
+            else
+              for script in "$@"; do
+                if has_script "$script"; then
+                  "$PM" run "$script"
+                  found=1
+                fi
+              done
+            fi
+            echo "::endgroup::"
+            if [ "$found" = 1 ]; then ran=$((ran + 1)); else echo "::notice::no $name task found, skipped"; fi
+          }
+          run_task check "$CHECK_COMMAND" lint typecheck type-check
+          run_task test "$TEST_COMMAND" test
+          run_task build "$BUILD_COMMAND" build
+          if [ "$ran" = 0 ] && [ "$ALLOW_EMPTY" != "true" ]; then
+            echo "::error::verify ran nothing: add lint/test/build scripts to package.json or set check-command/test-command/build-command"
+            exit 1
+          fi
+
+  python:
+    name: Python
+    if: ${{ inputs.flavor == 'python' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Set up uv
+        if: ${{ inputs.pm == 'uv' }}
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          enable-cache: false
+
+      - name: Install dependencies
+        env:
+          PM: ${{ inputs.pm }}
+          POETRY_VERSION: ${{ inputs.poetry-version }}
+        run: |
+          set -euo pipefail
+          case "$PM" in
+            uv)
+              uv sync --frozen ;;
+            poetry)
+              pipx install "poetry==$POETRY_VERSION"
+              poetry install --no-interaction ;;
+            pip)
+              installed=0
+              for f in requirements.txt requirements-dev.txt dev-requirements.txt; do
+                if [ -f "$f" ]; then python -m pip install -r "$f"; installed=1; fi
+              done
+              if [ "$installed" = 0 ] && { [ -f pyproject.toml ] || [ -f setup.py ]; }; then
+                extra=""
+                if [ -f pyproject.toml ] && grep -qE '^[[:space:]]*dev[[:space:]]*=' pyproject.toml; then extra="[dev]"; fi
+                python -m pip install -e ".$extra"
+              fi ;;
+            *)
+              echo "::error::unsupported package manager '$PM' for the python flavor"
+              exit 1 ;;
+          esac
+
+      - name: Run check, test and build
+        env:
+          PM: ${{ inputs.pm }}
+          CHECK_COMMAND: ${{ inputs.check-command }}
+          TEST_COMMAND: ${{ inputs.test-command }}
+          BUILD_COMMAND: ${{ inputs.build-command }}
+          ALLOW_EMPTY: ${{ inputs.allow-empty }}
+        run: |
+          set -euo pipefail
+          ran=0
+          case "$PM" in uv) run="uv run" ;; poetry) run="poetry run" ;; *) run="" ;; esac
+          has_cfg() { [ -f "$1" ] && grep -qE "$2" "$1"; }
+          # $run is intentionally unquoted: it is empty or a two-word command prefix.
+          run_task() {
+            local name="$1" override="$2" cmd found=0
+            shift 2
+            echo "::group::$name"
+            if [ -n "$override" ]; then
+              bash -euo pipefail -c "$override"
+              found=1
+            else
+              for cmd in "$@"; do
+                [ -n "$cmd" ] || continue
+                eval "$cmd"
+                found=1
+              done
+            fi
+            echo "::endgroup::"
+            if [ "$found" = 1 ]; then ran=$((ran + 1)); else echo "::notice::no $name task found, skipped"; fi
+          }
+          check_cmds=()
+          if [ -f ruff.toml ] || [ -f .ruff.toml ] || has_cfg pyproject.toml '^\[tool\.ruff'; then check_cmds+=("$run ruff check ."); fi
+          if [ -f mypy.ini ] || has_cfg pyproject.toml '^\[tool\.mypy'; then check_cmds+=("$run mypy ."); fi
+          test_cmds=()
+          if [ -d tests ] || [ -d test ] || [ -f pytest.ini ] || has_cfg pyproject.toml '^\[tool\.pytest'; then test_cmds+=("$run python -m pytest -q"); fi
+          build_cmds=()
+          case "$PM" in uv) build_cmds+=("uv build") ;; poetry) build_cmds+=("poetry build") ;; esac
+          run_task check "$CHECK_COMMAND" ${check_cmds[@]+"${check_cmds[@]}"}
+          run_task test "$TEST_COMMAND" ${test_cmds[@]+"${test_cmds[@]}"}
+          run_task build "$BUILD_COMMAND" ${build_cmds[@]+"${build_cmds[@]}"}
+          if [ "$ran" = 0 ] && [ "$ALLOW_EMPTY" != "true" ]; then
+            echo "::error::verify ran nothing: add ruff/mypy/pytest config or a [build-system], or set check-command/test-command/build-command"
+            exit 1
+          fi
+
+  go:
+    name: Go
+    if: ${{ inputs.flavor == 'go' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: ${{ inputs.working-directory == '.' && 'go.mod' || format('{0}/go.mod', inputs.working-directory) }}
+          cache: false
+
+      - name: Run check, test and build
+        env:
+          CHECK_COMMAND: ${{ inputs.check-command }}
+          TEST_COMMAND: ${{ inputs.test-command }}
+          BUILD_COMMAND: ${{ inputs.build-command }}
+        run: |
+          set -euo pipefail
+          run_task() {
+            local name="$1" override="$2" default="$3"
+            echo "::group::$name"
+            if [ -n "$override" ]; then
+              bash -euo pipefail -c "$override"
+            else
+              eval "$default"
+            fi
+            echo "::endgroup::"
+          }
+          run_task check "$CHECK_COMMAND" 'unformatted=$(gofmt -l .); if [ -n "$unformatted" ]; then echo "::error::gofmt needed for:"; echo "$unformatted"; exit 1; fi; go vet ./...'
+          run_task test "$TEST_COMMAND" 'go test ./...'
+          run_task build "$BUILD_COMMAND" 'go build ./...'
+
+  generic:
+    name: Generic (mise)
+    if: ${{ inputs.flavor == 'generic' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    defaults:
+      run:
+        shell: bash
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up mise
+        uses: jdx/mise-action@9b200bcecbfd6303e69a4a261b2e09e3757440a7 # v5.2.0
+        with:
+          install: true
+          cache: false
+          working_directory: ${{ inputs.working-directory }}
+
+      - name: Run check, test and build
+        env:
+          CHECK_COMMAND: ${{ inputs.check-command }}
+          TEST_COMMAND: ${{ inputs.test-command }}
+          BUILD_COMMAND: ${{ inputs.build-command }}
+          ALLOW_EMPTY: ${{ inputs.allow-empty }}
+        run: |
+          set -euo pipefail
+          ran=0
+          # Locate mise.toml in this directory or a parent, then list the task names it defines.
+          dir="$PWD"; root="${GITHUB_WORKSPACE:-/}"; cfg=""
+          while :; do
+            if [ -f "$dir/mise.toml" ]; then cfg="$dir/mise.toml"; break; fi
+            if [ "$dir" = "$root" ] || [ "$dir" = "/" ]; then break; fi
+            dir=$(dirname "$dir")
+          done
+          tasks=""
+          if [ -n "$cfg" ]; then
+            tasks=$(python3 -c 'import sys, tomllib; print(" ".join(tomllib.load(open(sys.argv[1], "rb")).get("tasks", {}).keys()))' "$cfg")
+          fi
+          run_task() {
+            local name="$1" override="$2" t found=0
+            echo "::group::$name"
+            if [ -n "$override" ]; then
+              bash -euo pipefail -c "$override"
+              found=1
+            else
+              for t in $tasks; do
+                if [ "$t" = "$name" ]; then mise run "$name"; found=1; fi
+              done
+            fi
+            echo "::endgroup::"
+            if [ "$found" = 1 ]; then ran=$((ran + 1)); else echo "::notice::no $name task found, skipped"; fi
+          }
+          run_task check "$CHECK_COMMAND"
+          run_task test "$TEST_COMMAND"
+          run_task build "$BUILD_COMMAND"
+          if [ "$ran" = 0 ] && [ "$ALLOW_EMPTY" != "true" ]; then
+            echo "::error::verify ran nothing: define check, test or build tasks in mise.toml"
+            exit 1
+          fi
